@@ -1,0 +1,120 @@
+name: Test build Windows x86_64 (portable)
+
+# Lean Windows build for hardware testing: no tests, docs, MAP65 or
+# NSIS installer. Uploads the staged install tree (exe + DLLs) as a
+# zip artifact that runs without installation.
+
+on:
+  push:
+    branches: ['test/**']
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: windows-latest
+    defaults:
+      run:
+        shell: msys2 {0}
+    steps:
+      - name: Disable core.autocrlf before checkout
+        shell: pwsh
+        run: git config --global core.autocrlf false
+
+      - uses: actions/checkout@v6
+
+      - uses: msys2/setup-msys2@v2
+        with:
+          msystem: MINGW64
+          update: true
+          cache: true
+          install: >-
+            git make tar
+            mingw-w64-x86_64-gcc
+            mingw-w64-x86_64-gcc-fortran
+            mingw-w64-x86_64-cmake
+            mingw-w64-x86_64-qt5-base
+            mingw-w64-x86_64-qt5-multimedia
+            mingw-w64-x86_64-qt5-serialport
+            mingw-w64-x86_64-qt5-svg
+            mingw-w64-x86_64-qt5-tools
+            mingw-w64-x86_64-qt5-websockets
+            mingw-w64-x86_64-qt5-activeqt
+            mingw-w64-x86_64-fftw
+            mingw-w64-x86_64-boost
+            mingw-w64-x86_64-libusb
+            mingw-w64-x86_64-portaudio
+            mingw-w64-x86_64-pkg-config
+            autoconf automake libtool
+
+      - name: Cache Hamlib
+        id: hamlib-cache
+        uses: actions/cache@v5
+        with:
+          path: hamlib-prefix
+          key: hamlib-windows-test-4.7.1
+
+      - name: Build Hamlib
+        if: steps.hamlib-cache.outputs.cache-hit != 'true'
+        env:
+          MSYS2_PATH_TYPE: inherit
+        run: |
+          WORKSPACE=$(cygpath "${GITHUB_WORKSPACE}")
+          git clone --depth 1 --branch 4.7.1 \
+            https://github.com/Hamlib/Hamlib.git hamlib-src
+          cd hamlib-src
+          ./bootstrap
+          ./configure \
+            --prefix="${WORKSPACE}/hamlib-prefix" \
+            --enable-shared --disable-static \
+            --without-cxx-binding \
+            --without-readline \
+            CFLAGS="-DNDEBUG -g -O2 -fdata-sections -ffunction-sections" \
+            LDFLAGS="-Wl,--gc-sections"
+          make -j$(nproc)
+          make install-strip
+
+      - name: Install OmniRig
+        shell: pwsh
+        run: |
+          Invoke-WebRequest -Uri "https://www.dxatlas.com/OmniRig/Files/OmniRig.zip" -OutFile OmniRig.zip
+          Expand-Archive -Path OmniRig.zip -DestinationPath omnirig-extract
+          $setup = Get-ChildItem -Path omnirig-extract -Filter "*.exe" -Recurse | Select-Object -First 1
+          if (-not $setup) { throw "No installer found in OmniRig.zip" }
+          Start-Process -FilePath $setup.FullName -ArgumentList '/VERYSILENT','/NORESTART' -Wait
+          $omnirig = Get-ChildItem -Path "C:\Program Files*\Afreet\OmniRig" -Filter "OmniRig.exe" -Recurse -ErrorAction SilentlyContinue | Select-Object -First 1
+          if (-not $omnirig) { throw "OmniRig install failed - OmniRig.exe not found" }
+          echo "OMNIRIG_PATH=$($omnirig.FullName)" >> $env:GITHUB_ENV
+
+      - name: Fix dumpcpp name
+        run: ln -sf /mingw64/bin/dumpcpp-qt5.exe /mingw64/bin/dumpcpp.exe
+
+      - name: Configure
+        run: |
+          WORKSPACE=$(cygpath "${GITHUB_WORKSPACE}")
+          OMNIRIG=$(cygpath "${OMNIRIG_PATH}")
+          cmake -G "MSYS Makefiles" -S . -B wsjtx-build \
+            -DCMAKE_PREFIX_PATH="${WORKSPACE}/hamlib-prefix" \
+            -DOMNIRIG_TYPE_LIB="${OMNIRIG}" \
+            -DCMAKE_Fortran_FLAGS="-fallow-argument-mismatch -std=legacy" \
+            -DCMAKE_POLICY_VERSION_MINIMUM=3.5 \
+            -DWSJT_SKIP_MANPAGES=ON \
+            -DWSJT_GENERATE_DOCS=OFF \
+            -DWSJT_BUILD_TESTS=OFF \
+            -DWSJT_BUILD_UTILS=OFF \
+            -DWSJT_SKIP_MAP65=ON \
+            -Wno-dev
+
+      - name: Build
+        run: cmake --build wsjtx-build -j$(nproc)
+
+      - name: Stage install
+        run: |
+          WORKSPACE=$(cygpath "${GITHUB_WORKSPACE}")
+          cmake --install wsjtx-build --prefix "${WORKSPACE}/wsjtx-portable"
+          ls -la "${WORKSPACE}/wsjtx-portable/bin"
+
+      - name: Upload portable build
+        uses: actions/upload-artifact@v7
+        with:
+          name: wsjtx-windows-x86_64-portable
+          path: wsjtx-portable
