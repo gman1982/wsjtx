@@ -194,12 +194,6 @@ private:
                                 // PTT - used to select rear audio.
 
   bool reversed_;               // True if VFOs are reversed.
-
-  MODE enforce_mode_;           // Mode to re-apply after a QSY.
-  int enforce_mode_polls_;      // Polls left to check enforce_mode_,
-                                // some rigs (e.g. Alinco DX-SR8)
-                                // switch to a band default mode on
-                                // QSY after HRD has passed our mode.
 };
 
 #endif
