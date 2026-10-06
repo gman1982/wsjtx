@@ -68,6 +68,8 @@ HRDTransceiver::HRDTransceiver (logger_type * logger
   , ptt_button_ {-1}
   , alt_ptt_button_ {-1}
   , reversed_ {false}
+  , enforce_mode_ {UNK}
+  , enforce_mode_polls_ {0}
 {
 }
 
@@ -572,6 +574,11 @@ void HRDTransceiver::do_frequency (Frequency f, MODE m, bool /*no_ignore*/)
       // set the mode again as some rigs (e.g. Alinco DX-SR8) switch to
       // a band default mode like LSB when the frequency changes
       do_mode (m);
+
+      // the rig may only switch after HRD has passed on our mode so
+      // check and re-apply it on the next few polls
+      enforce_mode_ = m;
+      enforce_mode_polls_ = 5;
     }
   update_rx_frequency (f);
 }
@@ -964,7 +971,18 @@ void HRDTransceiver::do_poll ()
   // transmitting
   if (vfo_count_ > 1 || !state ().ptt ())
     {
-      update_mode (get_data_mode (lookup_mode (get_dropdown (mode_A_dropdown_), mode_A_map_)));
+      auto mode = get_data_mode (lookup_mode (get_dropdown (mode_A_dropdown_), mode_A_map_));
+      if (enforce_mode_polls_ > 0)
+        {
+          --enforce_mode_polls_;
+          if (!state ().ptt () && UNK != enforce_mode_ && mode != enforce_mode_)
+            {
+              CAT_TRACE ("rig changed mode after QSY to" << mode << "re-applying" << enforce_mode_);
+              do_mode (enforce_mode_);
+              mode = enforce_mode_;
+            }
+        }
+      update_mode (mode);
     }
 }
 
